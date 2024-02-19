@@ -5,7 +5,7 @@
 
 const char *kDefaultIP = "127.0.0.1";
 const uint16_t kDefaultPort = 31719;
-const uint32_t kMaxClientConnections = 1;
+const uint32_t kMaxClientConnections = 1024;
 const uint32_t kMaxMessageSize = 4 * 1024;
 const uint32_t kMaxMessageQueueSize = 1024;
 
