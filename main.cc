@@ -15,51 +15,73 @@ void handle_signal(int32_t signal) {
   exit(0);
 }
 
-void get_config(const char **ip, uint16_t *port, bool *is_server, int32_t argc,
-                char *argv[]) {
-  if (argc > 1) {
-    if (strcmp(argv[1], "server") == 0) {
-      if (argc > 2) {
-        *ip = argv[2];
-      }
-      if (argc > 3) {
-        *port = std::stoi(argv[3]);
-      }
-      *is_server = true;
-    } else {
-      if (argc > 1) {
-        *ip = argv[1];
-      }
-      if (argc > 2) {
-        *port = std::stoi(argv[2]);
-      }
+struct Config {
+  const char *ip{kDefaultIP};
+  uint16_t port{kDefaultPort};
+  bool is_server{false};
+  bool is_drop{true};
+};
+
+Config get_config(int32_t argc, char *const argv[]) {
+  Config config;
+  int32_t opt_value = 0;
+  const char *opts = "sdhi:p:";
+
+  const char *help = "Usage: channel [options]\n"
+                     "Options:\n"
+                     "  -h\t\tShow this help message\n"
+                     "  -s\t\tRun as server\n"
+                     "  -d\t\tDisable drop\n"
+                     "  -i\t\tIP address\n"
+                     "  -p\t\tPort number\n";
+
+  while ((opt_value = getopt(argc, argv, opts)) != -1) {
+    switch (opt_value) {
+    case 's':
+      config.is_server = true;
+      break;
+    case 'i':
+      config.ip = optarg;
+      break;
+    case 'p':
+      config.port = std::stoi(optarg);
+      break;
+    case 'd':
+      config.is_drop = false;
+      break;
+    case 'h':
+      printf("%s", help);
+      exit(0);
+      break;
+    default:
+      printf("%s", help);
+      break;
     }
   }
+
+  return config;
 }
 
-int main(int32_t argc, char *argv[]) {
-  const char *ip = kDefaultIP;
-  uint16_t port = kDefaultPort;
-  bool is_server = false;
-  get_config(&ip, &port, &is_server, argc, argv);
+int32_t main(int32_t argc, char *const argv[]) {
+  Config config = get_config(argc, argv);
 
   signal(SIGINT, handle_signal);
   signal(SIGTERM, handle_signal);
 
-  if (is_server) {
-    // echo "hello world" | channel server 127.0.0.1 8001
+  if (config.is_server) {
+    // echo "hello world" | channel -s -i 127.0.0.1 -p 8001
     // then create server
-    server = std::make_unique<Server>(ip, port);
+    server = std::make_unique<Server>(config.ip, config.port);
     while (true) {
       std::string message;
       std::getline(std::cin, message);
       message += "\n";
-      server->send_message(message);
+      server->send_message(message, config.is_drop);
     }
   } else {
-    // channel 127.0.0.1 8001
+    // channel -i 127.0.0.1 -p 8001
     // then create client
-    client = std::make_unique<Client>(ip, port);
+    client = std::make_unique<Client>(config.ip, config.port);
     client->recv_message();
   }
 

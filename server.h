@@ -69,11 +69,11 @@ public:
     printf("Server closed\n");
   }
 
-  void send_message(const std::string &message) {
+  void send_message(const std::string &message, bool is_drop = true) {
     {
       std::lock_guard<std::mutex> lock(messages_mutex_);
       messages_.push_back(message);
-      if (messages_.size() > kMaxMessageQueueSize) {
+      if (is_drop && (messages_.size() > kMaxMessageQueueSize)) {
         printf("Drop message: %s", messages_.front().c_str());
         messages_.pop_front();
       }
