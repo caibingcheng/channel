@@ -3,11 +3,13 @@
 
 #include <arpa/inet.h>
 #include <stdint.h>
-#include <sys/select.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <condition_variable>
+#include <fstream>
+#include <iostream>
 #include <list>
 #include <mutex>
 #include <string>
@@ -15,32 +17,34 @@
 #include <unordered_set>
 
 #include "config.h"
+#include "log.h"
 
 class Server {
-public:
-  Server(const char *ip, uint16_t port) {
-    ip_ = ip;
+ public:
+  Server(uint16_t port) {
     port_ = port;
     server_socket_ = socket(AF_INET, SOCK_STREAM, 0);
     close(server_socket_);
 
     server_socket_ = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket_ < 0) {
-      throw "Failed to create server socket";
+      throw "Failed to create server socket\n";
     }
+
+    int32_t opt = 1;
+    setsockopt(server_socket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     struct sockaddr_in server_address;
     server_address.sin_family = AF_INET;
     server_address.sin_port = htons(port_);
-    server_address.sin_addr.s_addr = inet_addr(ip_.c_str());
+    server_address.sin_addr.s_addr = inet_addr("0.0.0.0");
 
-    if (bind(server_socket_, (struct sockaddr *)&server_address,
-             sizeof(server_address)) < 0) {
-      throw "Failed to bind server socket";
+    if (bind(server_socket_, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
+      throw "Failed to bind server socket\n";
     }
 
     if (listen(server_socket_, kMaxClientConnections) < 0) {
-      throw "Failed to listen on server socket";
+      throw "Failed to listen on server socket\n";
     }
 
     process_();
@@ -48,8 +52,8 @@ public:
 
   ~Server() {
     stop_ = true;
-    messages_condition_.notify_one();
-    clients_condition_.notify_one();
+    messages_condition_.notify_all();
+    clients_condition_.notify_all();
 
     if (client_thread_.joinable()) {
       client_thread_.join();
@@ -60,66 +64,96 @@ public:
         close(client_socket);
       }
     }
+    Log::debug("Client stopped");
 
     if (server_thread_.joinable()) {
       server_thread_.join();
     }
     close(server_socket_);
-
-    printf("Server closed\n");
+    Log::debug("Server stopped");
   }
 
-  void send_message(const std::string &message, bool is_drop = true) {
+  void send_message(bool is_drop) {
+    std::string message = "";
+    auto &bstream = std::cin;
+    while (std::getline(bstream, message) && !stop_) {
+      if (!message.empty()) {
+        message += "\n";
+        Log::debug("Message %lu Bytes", message.size());
+        Log::raw("%s", message.c_str());
+        send_message_(message, is_drop);
+      }
+    }
+
+    Log::debug("Waiting for sender to stop");
+    {
+      std::unique_lock<std::mutex> lock(messages_mutex_);
+      messages_condition_.wait(lock, [this] { return messages_.empty() || stop_; });
+    }
+    Log::debug("Sender stopped");
+  }
+
+ private:
+  void send_message_(const std::string &message, bool is_drop = true) {
     {
       std::lock_guard<std::mutex> lock(messages_mutex_);
       messages_.push_back(message);
       if (is_drop && (messages_.size() > kMaxMessageQueueSize)) {
-        printf("Drop message: %s", messages_.front().c_str());
+        Log::debug("Drop message: %s", messages_.front().c_str());
         messages_.pop_front();
       }
     }
     messages_condition_.notify_one();
   }
 
-private:
   void process_() {
     client_thread_ = std::thread([this]() {
-      // server socket select
-      fd_set readfds;
-      struct timeval timeout;
-      timeout.tv_sec = 0;
-      timeout.tv_usec = 1000;
+      const int32_t epoll_fd = epoll_create1(0);
+      if (epoll_fd == -1) {
+        throw "Failed to create epoll\n";
+      }
 
+      struct epoll_event event;
+      event.events = EPOLLIN;
+      event.data.fd = server_socket_;
+      if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_socket_, &event) == -1) {
+        throw "Failed to add server socket to epoll\n";
+      }
+
+      struct epoll_event events[1];
       while (!stop_) {
-        FD_ZERO(&readfds);
-        FD_SET(server_socket_, &readfds);
-        if (select(server_socket_ + 1, &readfds, NULL, NULL, &timeout) < 0) {
+        const int32_t nfds = epoll_wait(epoll_fd, events, 1, 500);
+        if (nfds < 0) {
+          Log::error("Failed to wait epoll\n");
+        }
+        if (nfds <= 0) {
           continue;
         }
 
-        if (FD_ISSET(server_socket_, &readfds)) {
-          int32_t client_socket = accept(server_socket_, NULL, NULL);
-          if (client_socket < 0) {
-            break;
-          }
-          {
-            std::lock_guard<std::mutex> lock(clients_mutex_);
-            client_sockets_.insert(client_socket);
-          }
-          clients_condition_.notify_one();
-          printf("New client connected, socket: %d, client count: %lu\n",
-                 client_socket, client_sockets_.size());
+        const int32_t client_socket = accept(server_socket_, NULL, NULL);
+        if (client_socket < 0) {
+          Log::error("Failed to accept client\n");
+          continue;
         }
+
+        {
+          std::lock_guard<std::mutex> lock(clients_mutex_);
+          client_sockets_.insert(client_socket);
+        }
+        clients_condition_.notify_one();
+        Log::debug("New client connected, socket: %d, client count: %lu", client_socket, client_sockets_.size());
       }
+
+      close(epoll_fd);
     });
 
     server_thread_ = std::thread([this]() {
       std::string message = "";
+      uint64_t send_bytes = 0;
       while (!stop_) {
         {
           std::unique_lock<std::mutex> lock(clients_mutex_);
-          clients_condition_.wait(
-              lock, [this] { return !client_sockets_.empty() || stop_; });
+          clients_condition_.wait(lock, [this] { return !client_sockets_.empty() || stop_; });
           if (stop_) {
             break;
           }
@@ -127,8 +161,7 @@ private:
 
         {
           std::unique_lock<std::mutex> lock(messages_mutex_);
-          messages_condition_.wait(
-              lock, [this] { return !messages_.empty() || stop_; });
+          messages_condition_.wait(lock, [this] { return !messages_.empty() || stop_; });
           if (stop_) {
             break;
           }
@@ -152,18 +185,11 @@ private:
         }
 
         do {
-          uint32_t message_length = message.size();
-          if (message_length > kMaxMessageSize) {
-            message_length = kMaxMessageSize;
-          }
-
+          const uint32_t message_length = std::min(static_cast<uint32_t>(message.size()), kMaxMessageSize);
           for (auto it = client_sockets.begin(); it != client_sockets.end();) {
             const int32_t client_socket = *it;
             const bool is_alive =
-                (send(client_socket, &message_length, sizeof(message_length),
-                      MSG_NOSIGNAL) == sizeof(message_length)) &&
-                send(client_socket, message.c_str(), message_length,
-                     MSG_NOSIGNAL) == message_length;
+                (send(client_socket, message.c_str(), message_length, MSG_NOSIGNAL) == message_length);
             if (!is_alive) {
               close(client_socket);
               {
@@ -171,21 +197,23 @@ private:
                 client_sockets_.erase(client_socket);
               }
               it = client_sockets.erase(it);
-              printf("Client disconnected, socket: %d, client count: %lu\n",
-                     client_socket, client_sockets.size());
+              Log::debug("Client disconnected, socket: %d, client count: %lu", client_socket, client_sockets.size());
             } else {
               ++it;
             }
           }
-
+          send_bytes += message_length;
+          Log::debug("Send %lu Bytes, curernt %lu", send_bytes, message_length);
           message = message.substr(message_length);
-        } while (message.size() != 0);
+        } while (!message.empty());
+
+        // notify sender
+        messages_condition_.notify_one();
       }
     });
   }
 
-private:
-  std::string ip_;
+ private:
   uint16_t port_;
   int32_t server_socket_;
   std::unordered_set<int32_t> client_sockets_;
@@ -202,4 +230,4 @@ private:
   std::list<std::string> messages_;
 };
 
-#endif // CHANNEL_SERVER_H
+#endif  // CHANNEL_SERVER_H

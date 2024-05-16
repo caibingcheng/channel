@@ -1,19 +1,11 @@
 #include "client.h"
+#include "log.h"
 #include "server.h"
 
 #include <csignal>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
-
-std::unique_ptr<Server> server;
-std::unique_ptr<Client> client;
-
-void handle_signal(int32_t signal) {
-  server = nullptr;
-  client = nullptr;
-  exit(0);
-}
 
 struct Config {
   const char *ip{kDefaultIP};
@@ -25,7 +17,7 @@ struct Config {
 Config get_config(int32_t argc, char *const argv[]) {
   Config config;
   int32_t opt_value = 0;
-  const char *opts = "sdhi:p:";
+  const char *opts = "sdhi:p:l:";
 
   const char *help = "Usage: channel [options]\n"
                      "Options:\n"
@@ -50,11 +42,14 @@ Config get_config(int32_t argc, char *const argv[]) {
       config.is_drop = false;
       break;
     case 'h':
-      printf("%s", help);
+      Log::raw("%s", help);
       exit(0);
       break;
+    case 'l':
+      Log::set_level(std::stoi(optarg));
+      break;
     default:
-      printf("%s", help);
+      Log::raw("%s", help);
       break;
     }
   }
@@ -64,26 +59,26 @@ Config get_config(int32_t argc, char *const argv[]) {
 
 int32_t main(int32_t argc, char *const argv[]) {
   Config config = get_config(argc, argv);
-
-  signal(SIGINT, handle_signal);
-  signal(SIGTERM, handle_signal);
-
-  if (config.is_server) {
-    // echo "hello world" | channel -s -i 127.0.0.1 -p 8001
-    // then create server
-    server = std::make_unique<Server>(config.ip, config.port);
-    while (true) {
-      std::string message;
-      std::getline(std::cin, message);
-      message += "\n";
-      server->send_message(message, config.is_drop);
+  try {
+    if (config.is_server) {
+      Log::debug("Running as server");
+      // echo "hello world" | channel -s
+      std::unique_ptr<Server> server = std::make_unique<Server>(config.port);
+      server->send_message(config.is_drop);
+    } else {
+      Log::debug("Running as client");
+      // channel
+      std::unique_ptr<Client> client = std::make_unique<Client>(config.ip, config.port);
+      client->recv_message();
     }
-  } else {
-    // channel -i 127.0.0.1 -p 8001
-    // then create client
-    client = std::make_unique<Client>(config.ip, config.port);
-    client->recv_message();
+  } catch (const char *message) {
+    Log::raw("%s", message);
+  } catch (const std::exception &e) {
+    Log::raw("%s", e.what());
+  } catch (...) {
+    Log::raw("Unknown exception");
   }
+  Log::debug("Exiting");
 
   return 0;
 }
