@@ -16,9 +16,7 @@ struct Config {
 
 Config get_config(int32_t argc, char *const argv[]) {
   Config config;
-  int32_t opt_value = 0;
   const char *opts = "sdhi:p:l:";
-
   const char *help = "Usage: channel [options]\n"
                      "Options:\n"
                      "  -h\t\tShow this help message\n"
@@ -27,7 +25,7 @@ Config get_config(int32_t argc, char *const argv[]) {
                      "  -i\t\tIP address\n"
                      "  -p\t\tPort number\n";
 
-  while ((opt_value = getopt(argc, argv, opts)) != -1) {
+  for (int32_t opt_value = getopt(argc, argv, opts); opt_value != -1; opt_value = getopt(argc, argv, opts)) {
     switch (opt_value) {
     case 's':
       config.is_server = true;
@@ -50,6 +48,7 @@ Config get_config(int32_t argc, char *const argv[]) {
       break;
     default:
       Log::raw("%s", help);
+      exit(0);
       break;
     }
   }
@@ -58,7 +57,7 @@ Config get_config(int32_t argc, char *const argv[]) {
 }
 
 int32_t main(int32_t argc, char *const argv[]) {
-  Config config = get_config(argc, argv);
+  const Config config = get_config(argc, argv);
   try {
     if (config.is_server) {
       Log::debug("Running as server");
