@@ -18,6 +18,7 @@
 
 #include "config.h"
 #include "log.h"
+#include "utils.h"
 
 class Server {
  public:
@@ -81,6 +82,10 @@ class Server {
         message += "\n";
         Log::debug("Message %lu Bytes", message.size());
         Log::raw("%s", message.c_str());
+        Message msg;
+        msg.body.length = message.size();
+        msg.body.generate_timestamp = Message::timestamp_ns();
+        message = std::string(reinterpret_cast<char *>(&msg), sizeof(Message)) + message;
         send_message_(message, is_drop);
       }
     }
@@ -171,7 +176,15 @@ class Server {
           message = "";
           std::lock_guard<std::mutex> lock(messages_mutex_);
           while (message.size() < kMaxMessageSize && !messages_.empty()) {
-            message += messages_.front();
+            const std::string &front_message = messages_.front();
+            if (!message.empty()) {
+              Message *const origin_msg = reinterpret_cast<Message *>(const_cast<char *>(message.c_str()));
+              const Message *const current_msg = reinterpret_cast<Message *>(const_cast<char *>(front_message.c_str()));
+              origin_msg->body.length += current_msg->body.length;
+              message += front_message.substr(sizeof(Message));
+            } else {
+              message += messages_.front();
+            }
             messages_.pop_front();
           }
         }
@@ -184,28 +197,28 @@ class Server {
           }
         }
 
-        do {
-          const uint32_t message_length = std::min(static_cast<uint32_t>(message.size()), kMaxMessageSize);
-          for (auto it = client_sockets.begin(); it != client_sockets.end();) {
-            const int32_t client_socket = *it;
-            const bool is_alive =
-                (send(client_socket, message.c_str(), message_length, MSG_NOSIGNAL) == message_length);
-            if (!is_alive) {
-              close(client_socket);
-              {
-                std::lock_guard<std::mutex> lock(clients_mutex_);
-                client_sockets_.erase(client_socket);
-              }
-              it = client_sockets.erase(it);
-              Log::debug("Client disconnected, socket: %d, client count: %lu", client_socket, client_sockets.size());
-            } else {
-              ++it;
+        Message *msg = reinterpret_cast<Message *>(const_cast<char *>(message.c_str()));
+        send_bytes += message.size();
+        msg->body.index = index_++;
+        msg->body.send_timestamp = Message::timestamp_ns();
+        msg->body.send_bytes = send_bytes;
+        for (auto it = client_sockets.begin(); it != client_sockets.end();) {
+          const int32_t client_socket = *it;
+          const ssize_t length = message.size();
+          const bool is_alive = (send(client_socket, message.c_str(), length, MSG_NOSIGNAL) == length);
+          if (!is_alive) {
+            close(client_socket);
+            {
+              std::lock_guard<std::mutex> lock(clients_mutex_);
+              client_sockets_.erase(client_socket);
             }
+            it = client_sockets.erase(it);
+            Log::debug("Client disconnected, socket: %d, client count: %lu", client_socket, client_sockets.size());
+          } else {
+            ++it;
           }
-          send_bytes += message_length;
-          Log::debug("Send %lu Bytes, curernt %lu", send_bytes, message_length);
-          message = message.substr(message_length);
-        } while (!message.empty());
+          Log::debug("Send %lu Bytes, curernt %ld", send_bytes, length);
+        }
 
         // notify sender
         messages_condition_.notify_one();
@@ -228,6 +241,8 @@ class Server {
   std::thread client_thread_;
 
   std::list<std::string> messages_;
+
+  uint64_t index_{0};
 };
 
 #endif  // CHANNEL_SERVER_H
