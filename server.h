@@ -84,7 +84,7 @@ class Server {
         Log::raw("%s", message.c_str());
         Message msg;
         msg.body.length = message.size();
-        msg.body.generate_timestamp = Message::timestamp_ns();
+        msg.body.generate_timestamp = Message::timestamp_us();
         message = std::string(reinterpret_cast<char *>(&msg), sizeof(Message)) + message;
         send_message_(message, is_drop);
       }
@@ -129,7 +129,7 @@ class Server {
       while (!stop_) {
         const int32_t nfds = epoll_wait(epoll_fd, events, 1, 500);
         if (nfds < 0) {
-          Log::error("Failed to wait epoll\n");
+          Log::error("Failed to wait epoll");
         }
         if (nfds <= 0) {
           continue;
@@ -137,7 +137,7 @@ class Server {
 
         const int32_t client_socket = accept(server_socket_, NULL, NULL);
         if (client_socket < 0) {
-          Log::error("Failed to accept client\n");
+          Log::error("Failed to accept client");
           continue;
         }
 
@@ -200,7 +200,7 @@ class Server {
         Message *msg = reinterpret_cast<Message *>(const_cast<char *>(message.c_str()));
         send_bytes += message.size();
         msg->body.index = index_++;
-        msg->body.send_timestamp = Message::timestamp_ns();
+        msg->body.send_timestamp = Message::timestamp_us() - msg->body.generate_timestamp;
         msg->body.send_bytes = send_bytes;
         for (auto it = client_sockets.begin(); it != client_sockets.end();) {
           const int32_t client_socket = *it;

@@ -7,25 +7,41 @@
 #include <algorithm>
 #include <vector>
 
+inline const union {
+  uint32_t version;
+  struct {
+    uint8_t patch;
+    uint8_t minor;
+    uint8_t major;
+  } detail;
+} kVersion{.detail = {
+               .patch = 1,
+               .minor = 1,
+               .major = 0,
+           }};
+
 struct Message {
   struct {
-    uint32_t size{sizeof(Message)};
-    uint32_t version{kVersion.version};
-  } header;
+    uint32_t version : 24;
+    uint32_t size : 8;
+  } header = {
+      .version = kVersion.version,
+      .size = sizeof(Message),
+  };
 
-  struct {
-    uint64_t index{0};
-    uint64_t generate_timestamp{0};
-    uint64_t send_timestamp{0};
-    uint64_t send_bytes{0};
+  struct __attribute__((packed)) {
+    int64_t generate_timestamp{0};
+    int32_t send_timestamp{0};
+    uint32_t index{0};
+    uint64_t send_bytes : 48;
     // data length excluding Message
-    uint64_t length{0};
+    uint64_t length : 16;
   } body;
 
-  static uint64_t timestamp_ns() {
+  static int64_t timestamp_us() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    return ts.tv_sec * 1000000000 + ts.tv_nsec;
+    return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
   }
 };
 
